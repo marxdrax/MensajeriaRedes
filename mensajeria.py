@@ -2,66 +2,116 @@ import socket
 import hashlib
 import signal
 import sys
-import time
 import threading
+from datetime import datetime
+import traceback
 
-#Configuracion
+# Configuración
 MAX_LARGO_MENSAJE = 255
-HOST = "0.0.0.0"
+global running
+running = True
 
-#Control de salida por ctrl c
-def manejar_salida(sig, frame):
-    print("\nCTRL + C recibido. Cerrando programa correctamente...")
-    sys.exit(0)  # Finaliza el programa limpiamente
+PUERTO = int(sys.argv[1])
 
-# Configurar el manejador de señales
-signal.signal(signal.SIGINT, manejar_salida)
-#_____________________________________________________________________
+def crearSocketTCP():
+    return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-def receptor(usuario):
-    #crear socket para escuchar sobre el puerto pasado en sys.argv[1] (por consola al ejecutar el programa)
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind((HOST, int(sys.argv[1]))) #host 0.0.0.0 para escuchar todas las interfaces de red segun chatgpt, sys.argv[1] es el puerto definido en el argumento pasado al ejecutar el programa
-    server_socket.listen(5) #maximo de conexiones aceptadas en simultaneo
+def crearSocketUDP():
+    return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    while True:
-        client_socket, client_address = server_socket.accept()
-        ip_emisor = client_address[0] #se usa client_address[0] dado que es una tupla adr:port
+def emisorUDP(destino, mensaje):
+    sock = crearSocketUDP()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.sendto(mensaje.encode(), (destino, PUERTO))
+    sock.close()
 
-        msg = client_socket.recv(MAX_LARGO_MENSAJE).decode('utf-8').strip() #recibe mensajes de maximo 255 bits, se deberia contemplar caso de mas, para ignorarlos, cortarlos o solicitar se reenvie ajustado al largo
-        hora = time.strftime("%Y.%m.%d %H:%M")
-        print(f"[{hora}] {ip_emisor} {usuario} dice: {msg}")
-        client_socket.close()
+def emisorTCP(destino, mensaje):
+    sock = crearSocketTCP()
+    sock.connect((destino, PUERTO))
+    sock.send(mensaje.encode())
+    sock.close()
 
+def receptorTCP():
+    sock = crearSocketTCP()
+    sock.bind(("0.0.0.0", PUERTO))
+    sock.listen(5)
+    print(f"Escuchando en el puerto {PUERTO}")
+    while running:
+        conn, addr = sock.accept()
+        with conn:
+            while True:
+                mensaje = conn.recv(1024).decode()
+                if not mensaje:
+                    break
+                mensaje = mensaje.split(" ", 1)
+                usuario = mensaje[0]
+                mensaje = mensaje[1]
+                print(f"[{datetime.now()}] {addr} {usuario} dice: {mensaje}")
+            conn.close()
 
+def receptorUDP():
+    sock = crearSocketUDP()
+    sock.bind(("0.0.0.0", PUERTO))
+    print(f"Escuchando en el puerto {PUERTO}")
+    while running:
+        mensaje, direccion = sock.recvfrom(1024)
+        mensaje = mensaje.decode()
+        print(f"[{datetime.now()}] {direccion} dice: {mensaje}")
+    sock.close()
+                
+def controladorEmisor(usuario):
+    try:
+        while running:
+            mensaje = input().split(" ", 1)
+            destino = mensaje[0]
+            mensaje = mensaje[1][:MAX_LARGO_MENSAJE]
+            mensaje_a_enviar = f"{usuario} {mensaje}"
+            if destino == '*':
+                emisorUDP('255.255.255.255', mensaje_a_enviar)
+            else:
+                emisorTCP(destino, mensaje_a_enviar)
+    except Exception as e:
+        print(f"Error en el controlador del emisor: {e}")
+        traceback.print_exc()
 
+def cierre():
+    global running
+    running = False
+    sys.exit(0)
 
-def emisor():
-   #crear socket para enviar mensajes a partir de un ingreso desde terminal, una vez ejecutado el programa, por el usuario
+def signal_handler(signum, frame):
+    print(f"\nRecibi la senal {signum}. Cerrando")
+    cierre()
 
-
-def auth():
-    #socket para conectar al servidor de auth en ti.esi.edu.uy:33, donde se enviara el usuario y la password generados en el main (se pueden pasar a este metodo), y obtener la respuesta SI o NO por dicha app
-
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 if __name__ == "__main__":
-    while True:
+    try:
         usuario = input("Usuario: ")
-        password = hashlib.md5(usuario.encode()).hexdigest() #se encripta la password en md5
-        auth() #ejecutar la consulta con el usuario y la password al server de auth
-        if auth() == "SI":
-            print(f"Bienvenido {nombreCompleto}")#nombreCompleto viene en la respuesta del server de auth
-            #se ubica aqui la creacion de los hilos de recep y emisor para hacerlo solo una vez se autentique el usuario
-            hilo_receptor = threading.Thread(target=receptor)
-            hilo_emisor = threading.Thread(target=emisor)
-            hilo_receptor.start()
-            hilo_emisor.start()
+        password = hashlib.md5(usuario.encode()).hexdigest()
+        hiloReceptorTCP = threading.Thread(target=receptorTCP, daemon= False)
+        hiloReceptorUDP = threading.Thread(target=receptorUDP, daemon= False)
+        hiloEmisor = threading.Thread(target=controladorEmisor, args=(usuario,), daemon= False)
+        hiloReceptorTCP.start()
+        hiloReceptorUDP.start()
+        hiloEmisor.start()
 
-            hilo_receptor.join()
-            hilo_emisor.join()
-        else:
-            print("Error de autenticacion")
+        while running:
+            pass
+    except KeyboardInterrupt:
+        hiloEmisor.join()
+        hiloReceptorTCP.join()
+        hiloReceptorUDP.join()
+        cierre()
         
-        
-        
-        
+
+    #conectar al server de auth
+    #auth = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #auth.connect(("localhost", 8080))
+    #auth.sendall(f"{usuario} {password}".encode())
+    #auth.close()
+
+    
+
+
