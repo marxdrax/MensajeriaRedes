@@ -24,26 +24,34 @@ def codificar_md5(texto):
 
 def autenticar(usuario, clave, ip_auth, puerto_auth):
     clave_md5 = codificar_md5(clave)
-    credencial = f"{usuario}-{clave_md5}\r\n"
+    credencial = f"{usuario}-{clave_md5}\r\n"  # Asegura CRLF
 
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(10)  # Timeout mayor para esperar el nombre
         s.connect((ip_auth, puerto_auth))
-        bienvenida = s.recv(1024).decode()
-        print(bienvenida.strip())
-
+        
+        # 1. Recibir bienvenida inicial
+        bienvenida = s.recv(1024).decode().strip()
+        print(bienvenida)  # Muestra inmediatamente "Redes 2025 - Laboratorio..."
+        
+        # 2. Enviar credenciales
         s.sendall(credencial.encode())
-        respuesta = s.recv(1024).decode().split("\r\n")
-
-        s.close()
-
-        if respuesta[0] == "SI":
-            return True, respuesta[1]
+        
+        # 3. Recibir SI/NO (primera respuesta)
+        respuesta = s.recv(4).decode().strip()  # "SI\r\n" o "NO\r\n" son 4 bytes
+        
+        if respuesta == "SI":
+            nombre = s.recv(1024).decode().strip()
+            return True, nombre
         else:
             return False, ""
+            
     except Exception as e:
-        print(f"[ERROR] No se pudo conectar con el servidor de autenticación: {e}")
+        print(f"[ERROR] Autenticación fallida: {e}")
         return False, ""
+    finally:
+        s.close()
 
 # === Receptores ===
 def receptor_tcp(puerto):
